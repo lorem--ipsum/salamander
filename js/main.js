@@ -1,5 +1,5 @@
 import { COLORS } from './dsp.js';
-import { Player } from './player.js';
+import { Player, VOICES } from './player.js';
 import { renderLoop } from './render.js';
 import { UI } from './ui.js';
 import * as store from './presets.js';
@@ -88,18 +88,22 @@ async function runRender() {
   // Let the status paint before the transform blocks the main thread.
   await nextPaint();
 
-  let result;
+  // One independent loop per voice. They play together, staggered, so neither voice's
+  // loop seam is ever exposed; each is rendered 3 dB down so the pair sums to the
+  // intended level.
+  const perVoice = { ...settings, volumeDb: settings.volumeDb - 10 * Math.log10(VOICES) };
+  let renders;
   try {
-    result = renderLoop(settings);
+    renders = Array.from({ length: VOICES }, () => renderLoop(perVoice));
   } catch (err) {
     ui.setError(`Could not render the loop: ${err.message}`);
     ui.setBusy(false);
     return;
   }
 
-  lastRender = result;
+  lastRender = renders[0];
   player.setTrackName(trackName());
-  await player.load(result.url);
+  await player.load(renders.map((r) => r.url), renders[0].durationSec);
   ui.setBusy(false);
   updateStatus();
 }

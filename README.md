@@ -83,12 +83,42 @@ circularly so the signal stays exactly periodic. The level step across the loop 
 against an 0.89 dB median for ordinary moments in the file — the seam is a smaller event than
 86% of the rest of the noise. It also masks more evenly and sits louder for the same peak.
 
+### The player's own looping is not gapless — the voices fade around it
+
+Making the *file* loop seamlessly turned out to be the easy half. A media element's `loop`
+attribute is not gapless: measured in Chrome with no Web Audio anywhere near the path, by
+comparing media time against the wall clock, it **stalls for about 95 ms at every restart**.
+Over 30 seconds of wall clock only 29.1 seconds of audio played. That is heard as a cut once
+per loop, and it is the restart itself rather than the source — blob: and data: URLs stall
+alike.
+
+Nothing can be scheduled in JavaScript to cover it, because JavaScript is frozen once the
+phone is locked, and there is no volume to automate either — iOS ignores it. So the crossfade
+is baked into the audio itself. Each voice is multiplied by `sin(pi*t/T)`: silent at both ends
+of its file, peak in the middle. **The stall then happens while that voice is already
+silent.** Several voices play at once, evenly staggered, and `sin^2` sampled at V equally
+spaced phases sums to `V/2` — a mathematically constant total, for any V >= 2. No mixer, no
+volume, no JavaScript.
+
+Simply overlapping voices at full level is not enough, and the reason is worth recording.
+Averaged over the stall the total only dips by `10*log10(V/(V-1))`, which is 1.8 dB at three
+voices and sounds harmless on paper. But the voices are uncorrelated, so when the momentarily
+loudest one drops out the instantaneous hole is far deeper. Measured against an identical mix
+with no stall, block by block:
+
+| | mean drop | worst 5 ms block |
+|---|---|---|
+| flat voices | -2.87 dB | **-9.72 dB** |
+| faded voices | -0.05 dB | **-0.16 dB** |
+
+Three faded voices sum to within 0.08 dB of a single flat voice at full level, so the
+arrangement costs nothing in loudness.
+
 ### Changing a setting does not produce a gap
 
-Two `<audio>` elements are kept alive and ping-ponged. A new loop is preloaded and started
-*before* the old one is paused, so there is never a moment of silence. Looping itself uses
-the native `loop` attribute rather than a JavaScript `ended` handler, because JavaScript is
-throttled or frozen once the phone is locked.
+Each voice keeps two elements, ping-ponged. A new loop is preloaded and started *before* the
+old one is paused, so there is never a moment of silence, and the stagger is re-established
+on every swap.
 
 ## Running it locally
 

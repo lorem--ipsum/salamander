@@ -247,6 +247,25 @@ function flattenSlowSwell(re, im, sampleRate) {
   });
 }
 
+/**
+ * Fade each voice to silence at both ends of its file.
+ *
+ * A media element's loop restart stalls for ~95 ms, and no amount of masking hides that
+ * while the voice is at full level. So the voice is silent exactly where the stall
+ * happens. sin(pi*t/T) sampled at V equally spaced phases has sin^2 summing to V/2 — a
+ * mathematically constant total — so V staggered voices crossfade into one another with
+ * no mixer, no volume control and no JavaScript, none of which are available once the
+ * phone is locked. It also makes the file trivially seamless: both ends are zero.
+ */
+function applyVoiceEnvelope(re, im) {
+  const n = re.length;
+  for (let i = 0; i < n; i++) {
+    const e = Math.sin((Math.PI * i) / n);
+    re[i] *= e;
+    im[i] *= e;
+  }
+}
+
 /** Linear below the knee, smoothly asymptotic to the ceiling above it. */
 function softClip(x) {
   const a = x < 0 ? -x : x;
@@ -312,6 +331,7 @@ export function renderLoop(
     sampleRate = SAMPLE_RATE,
     steadyLow = true,
     flatten = true,
+    envelope = true,
     lowWindowSec = LOW_WINDOW_SEC,
     lowStrength = LOW_STRENGTH,
   } = {},
@@ -390,6 +410,8 @@ export function renderLoop(
     steadyLowEnd(re, im, low, { re: bandRe, im: bandIm }, n, df, durationSec, lowWindowSec, lowStrength);
   }
   if (flatten) flattenSlowSwell(re, im, sampleRate);
+  // Last, so the levelling passes above never try to flatten the fade back out.
+  if (envelope) applyVoiceEnvelope(re, im);
 
   let sum = 0;
   let peak = 0;

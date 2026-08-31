@@ -2,10 +2,23 @@
 // suspends AudioContext the moment the screen locks. A media element keeps going, which
 // is the whole point of this app.
 //
-// Two elements are kept alive and ping-ponged so that changing a setting never leaves a
-// gap: the new loop is preloaded and started before the old one is paused.
+// But a media element's own `loop` is NOT gapless. Measured in Chrome with no Web Audio
+// anywhere near the path — comparing media time against the wall clock — it stalls for
+// about 95 ms at every restart, which is heard as a cut once per loop. It is the restart
+// itself, not the source: blob: and data: URLs stall alike. Nothing can be scheduled in
+// JavaScript to cover it either, because JavaScript is frozen once the phone is locked.
+//
+// So several independent loops play at once, evenly staggered. When one stalls the others
+// are mid-file, and the level dips by 10*log10(V/(V-1)) dB instead of dropping out — 1.8 dB
+// at three voices, which measures no deeper than the noise's own natural minima. Each voice
+// is rendered 10*log10(V) dB down so they sum to the intended level.
+//
+// Each voice keeps two elements so a settings change can be preloaded and started before
+// the old one is paused, leaving no gap there either.
 
 import { silentWavUrl } from './render.js';
+
+export const VOICES = 3;
 
 const ARTWORK = [
   // iOS before 18 uses the *first* entry and greys out anything over 128 px, so the
@@ -35,18 +48,22 @@ export class Player {
   constructor({ onStateChange, onError } = {}) {
     this.onStateChange = onStateChange || (() => {});
     this.onError = onError || (() => {});
-    this.els = [this.#makeElement(), this.#makeElement()];
-    this.active = 0;
-    this.urls = [null, null];
+    this.voices = [];
+    for (let v = 0; v < VOICES; v++) {
+      this.voices.push({ els: [this.#makeElement(), this.#makeElement()], active: 0, urls: [null, null] });
+    }
     this.unlocked = false;
     this.wantPlaying = false;
     this.swapping = false;
     this.trackName = 'Noise';
+    this.durationSec = 0;
 
     document.addEventListener('visibilitychange', () => {
       // Recover from interruptions (an alarm, a call) once we are back in the foreground.
-      if (document.visibilityState === 'visible' && this.wantPlaying && this.current.paused) {
-        this.current.play().catch(() => {});
+      if (document.visibilityState !== 'visible' || !this.wantPlaying) return;
+      for (const voice of this.voices) {
+        const el = voice.els[voice.active];
+        if (el.paused) el.play().catch(() => {});
       }
     });
   }
@@ -66,16 +83,13 @@ export class Player {
     return el;
   }
 
-  get current() {
-    return this.els[this.active];
-  }
-
-  get idle() {
-    return this.els[1 - this.active];
+  /** The element currently carrying each voice. */
+  get live() {
+    return this.voices.map((v) => v.els[v.active]);
   }
 
   get playing() {
-    return !this.current.paused;
+    return this.live.some((el) => !el.paused);
   }
 
   #sync() {
@@ -84,30 +98,6 @@ export class Player {
       navigator.mediaSession.playbackState = this.playing ? 'playing' : 'paused';
     }
     this.onStateChange(this.playing);
-  }
-
-  /**
-   * iOS grants playback permission per element, and only for a play() call made in the
-   * same synchronous turn as the user's tap. The element the user is starting gets that
-   * for free; this gives the *other* element its grant in the same turn, so later gapless
-   * swaps are allowed to call play() on it programmatically.
-   */
-  #unlockIdleElement() {
-    if (this.unlocked) return;
-    this.unlocked = true;
-    const other = this.idle;
-    let temporary = null;
-    if (!other.src) {
-      temporary = silentWavUrl();
-      other.src = temporary;
-    }
-    other
-      .play()
-      .then(() => other.pause())
-      .catch(() => {})
-      .finally(() => {
-        if (temporary) setTimeout(() => URL.revokeObjectURL(temporary), 2000);
-      });
   }
 
   #setMetadata() {
@@ -129,49 +119,83 @@ export class Player {
     if (this.playing) this.#setMetadata();
   }
 
-  /** Swap in a freshly rendered loop without producing a gap. */
-  async load(url) {
-    const next = this.idle;
-    const previous = this.urls[1 - this.active];
-    next.src = url;
-    this.urls[1 - this.active] = url;
+  /** Stagger the voices so their loop seams never coincide. */
+  #offsetFor(index) {
+    return this.durationSec ? (this.durationSec * index) / VOICES : 0;
+  }
 
-    if (!this.playing) {
-      next.load();
-      this.active = 1 - this.active;
-      if (previous) URL.revokeObjectURL(previous);
-      return;
-    }
-
+  /** Swap in freshly rendered loops — one per voice — without producing a gap. */
+  async load(urls, durationSec) {
+    this.durationSec = durationSec || this.durationSec;
+    const wasPlaying = this.playing;
     this.swapping = true;
     try {
-      const old = this.current;
-      // Both listeners go on before the action that fires them, otherwise the event is
-      // missed and we sit waiting for the next fallback, overlapping the two loops for
-      // far longer than necessary.
-      const ready = once(next, ['canplaythrough', 'canplay', 'loadeddata'], 4000);
-      next.load();
-      await ready;
-      const started = once(next, ['playing', 'timeupdate'], 1500);
-      await next.play().catch(() => {});
-      await started;
-      old.pause();
-      this.active = 1 - this.active;
+      await Promise.all(
+        this.voices.map(async (voice, index) => {
+          const next = voice.els[1 - voice.active];
+          const old = voice.els[voice.active];
+          const previous = voice.urls[1 - voice.active];
+          next.src = urls[index];
+          voice.urls[1 - voice.active] = urls[index];
+
+          // Both listeners go on before the action that fires them, otherwise the event
+          // is missed and we sit waiting for a fallback, overlapping far longer.
+          const ready = once(next, ['canplaythrough', 'canplay', 'loadeddata'], 4000);
+          next.load();
+          await ready;
+          try {
+            next.currentTime = this.#offsetFor(index);
+          } catch {
+            /* seeking before metadata lands is not fatal — the stagger is an optimisation */
+          }
+
+          if (wasPlaying) {
+            const started = once(next, ['playing', 'timeupdate'], 1500);
+            await next.play().catch(() => {});
+            await started;
+            old.pause();
+          }
+          voice.active = 1 - voice.active;
+          if (previous) setTimeout(() => URL.revokeObjectURL(previous), 1000);
+        }),
+      );
     } finally {
       this.swapping = false;
     }
-    if (previous) setTimeout(() => URL.revokeObjectURL(previous), 1000);
     this.#sync();
+  }
+
+  /**
+   * iOS grants playback permission per element, and only for a play() call made in the
+   * same synchronous turn as the user's tap. Every element therefore gets its grant here,
+   * so later swaps are allowed to call play() programmatically.
+   */
+  #unlockIdle() {
+    if (this.unlocked) return;
+    this.unlocked = true;
+    let temporary = null;
+    for (const voice of this.voices) {
+      const other = voice.els[1 - voice.active];
+      if (!other.src) {
+        temporary = temporary || silentWavUrl();
+        other.src = temporary;
+      }
+      other
+        .play()
+        .then(() => other.pause())
+        .catch(() => {});
+    }
+    if (temporary) setTimeout(() => URL.revokeObjectURL(temporary), 4000);
   }
 
   async play() {
     this.wantPlaying = true;
     this.#setMetadata();
-    // Both play() calls must be issued before the first await, while still inside the tap.
-    const started = this.current.play();
-    this.#unlockIdleElement();
+    // Every play() must be issued before the first await, while still inside the tap.
+    const started = this.live.map((el) => el.play());
+    this.#unlockIdle();
     try {
-      await started;
+      await Promise.all(started);
       this.onError(null);
     } catch (err) {
       this.wantPlaying = false;
@@ -182,7 +206,7 @@ export class Player {
 
   pause() {
     this.wantPlaying = false;
-    for (const el of this.els) el.pause();
+    for (const voice of this.voices) for (const el of voice.els) el.pause();
     this.#sync();
   }
 
