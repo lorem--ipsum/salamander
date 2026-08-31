@@ -247,8 +247,19 @@ function flattenSlowSwell(re, im, sampleRate) {
   });
 }
 
+// Lobes in each voice's fade envelope. With one lobe a voice is only silent at the ends of
+// its file, so it can only be exchanged once per loop and a settings change takes a whole
+// loop to land. More lobes means more silent moments and so faster changes, at no cost to
+// the constant-sum property: summing sin^2 at V equally spaced phases stays constant for
+// any lobe count, as long as V does not divide it. It must therefore stay coprime-ish with
+// VOICES — 4 lobes against 3 voices is fine, 3 or 6 would not be.
+//
+// It cannot go too high either. Drift between voices turns into a level ripple at the lobe
+// rate, and the faster that rate the more audible the ripple becomes over a long night.
+export const ENVELOPE_LOBES = 4;
+
 /**
- * Fade each voice to silence at both ends of its file.
+ * Fade each voice to silence, several times per file.
  *
  * A media element's loop restart stalls for ~95 ms, and no amount of masking hides that
  * while the voice is at full level. So the voice is silent exactly where the stall
@@ -260,7 +271,9 @@ function flattenSlowSwell(re, im, sampleRate) {
 function applyVoiceEnvelope(re, im) {
   const n = re.length;
   for (let i = 0; i < n; i++) {
-    const e = Math.sin((Math.PI * i) / n);
+    // Raw sine rather than its absolute value: the sign flips between lobes, which is
+    // inaudible in noise and keeps the envelope smooth through each zero.
+    const e = Math.sin((ENVELOPE_LOBES * Math.PI * i) / n);
     re[i] *= e;
     im[i] *= e;
   }

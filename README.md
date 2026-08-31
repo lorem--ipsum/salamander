@@ -182,10 +182,35 @@ Measured, worst discontinuity at any handover:
 On the real output across a slider change the level stays within +/-1.14 dB, and the largest
 step between 43 ms blocks is 1.76 dB — ordinary brown-noise variation rather than a jump.
 
-The cost is that a change is not instant. A voice reaches its quiet point once per loop and
-the voices are staggered, so a change lands in three steps roughly 8 seconds apart and
-completes within one loop. The transport says "easing in..." while that happens, because
-otherwise the delay reads as the app ignoring the slider.
+### Several silent points per loop, so changes land quickly
+
+Waiting for a voice to fall silent is only slow if it is silent rarely. With a single-lobe
+`sin(pi*t/T)` envelope a voice is quiet just twice per file, so a change took a whole loop —
+about 24 seconds — which is far too slow to dial in an equaliser.
+
+The constant-sum property does not actually require one lobe. Summing `sin^2` at V equally
+spaced phases stays constant for **any** lobe count k, as long as V does not divide k. So each
+voice now has four lobes against three voices: it passes through silence four times per loop
+and can be exchanged at any of them.
+
+Measured, the same slider change:
+
+| | first change | fully applied |
+|---|---|---|
+| one lobe | 8.0 s | 24 s |
+| four lobes | 2.6 s | **6.5 s** |
+
+Worst discontinuity is -34 dB, and across the change the output level holds within about
+1 dB with a largest 43 ms step of 1.4 dB — ordinary noise variation. A single voice now
+swings 22.5 dB as its lobes come and go, while the sum of the three stays flat to 0.96 dB.
+
+The lobe count cannot climb without limit. Drift between voices shows up as a level ripple at
+the lobe rate, and the faster that rate the more audible it becomes over a long night. Four
+lobes puts any realistic overnight drift well under half a dB; eight would halve the latency
+again and roughly double that ripple.
+
+The transport says "easing in..." while a change is landing, because otherwise even a couple
+of seconds reads as the app ignoring the slider.
 
 ## Running it locally
 

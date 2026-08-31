@@ -16,7 +16,7 @@
 // Each voice keeps two elements so a settings change can be preloaded and started before
 // the old one is paused, leaving no gap there either.
 
-import { silentWavUrl } from './render.js';
+import { ENVELOPE_LOBES, silentWavUrl } from './render.js';
 
 export const VOICES = 3;
 
@@ -25,7 +25,9 @@ export const VOICES = 3;
 // so this aims to land TARGET_LEAD_SEC from the end, where the envelope is about -40 dB on
 // a 24 s loop, rather than settling for whatever a polling tick happens to catch.
 const ARM_WITHIN_SEC = 0.8;
-const TARGET_LEAD_SEC = 0.08;
+// Lobes are shorter than a whole file, so the envelope climbs away from each zero faster
+// and the exchange has to be timed tighter to stay equally quiet.
+const TARGET_LEAD_SEC = 0.03;
 const POLL_MS = 50;
 
 const ARTWORK = [
@@ -242,7 +244,10 @@ export class Player {
         if (voice.armed) continue;
         const old = voice.els[voice.active];
         const total = old.duration || this.durationSec;
-        const remaining = total ? total - old.currentTime : 0;
+        // A voice is silent at every lobe boundary, not just at the end of its file, so
+        // wait only for the next one of those.
+        const lobe = total / ENVELOPE_LOBES;
+        const remaining = total ? lobe - (old.currentTime % lobe) : 0;
         if (total && !old.paused && !forced && remaining > ARM_WITHIN_SEC) continue;
 
         // Close enough to time the exchange precisely instead of waiting for a tick.
@@ -253,6 +258,8 @@ export class Player {
           if (generation !== this.swapGeneration) return;
           const next = voice.els[1 - voice.active];
           try {
+            // Start from zero: that is a lobe boundary too, so the envelope carries on
+            // from silence exactly as it would have, and the stagger survives.
             next.currentTime = 0;
           } catch {
             /* not fatal: it plays from wherever it is */
