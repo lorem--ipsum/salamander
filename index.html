@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Salamander — noise for sleeping</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"
+    />
+    <meta name="description" content="A noise generator built to run all night on a locked iPhone." />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0a0c10" />
+
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Salamander" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png" />
+    <link rel="icon" href="icon-192.png" />
+
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main>
+      <header class="masthead">
+        <h1>Salamander</h1>
+      </header>
+
+      <section class="transport">
+        <button id="playToggle" class="play" type="button" aria-label="Play">
+          <span class="glyph" aria-hidden="true"></span>
+        </button>
+        <div class="readout">
+          <p id="status" class="status">Ready</p>
+          <p id="detail" class="detail"></p>
+        </div>
+      </section>
+
+      <p id="error" class="error" role="alert" hidden></p>
+
+      <section class="panel">
+        <div class="picks">
+          <label class="pick">
+            <span class="pick-name">Colour</span>
+            <select id="colorSelect"></select>
+          </label>
+          <label class="pick">
+            <span class="pick-name">Preset</span>
+            <select id="presetSelect"></select>
+          </label>
+        </div>
+        <p id="colorBlurb" class="blurb"></p>
+        <div class="preset-actions">
+          <button id="savePreset" class="ghost" type="button">Save current…</button>
+          <button id="deletePreset" class="ghost danger" type="button" hidden>Delete</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <canvas id="curve" class="curve" aria-label="Output response curve"></canvas>
+      </section>
+
+      <section class="panel">
+        <h2>Equaliser</h2>
+        <div id="eq" class="faders"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Shaping</h2>
+        <div id="shaping" class="rows"></div>
+      </section>
+
+      <footer class="notes">
+        <p>
+          Add to Home Screen for a full-screen launcher. If lock-screen buttons ever stop
+          responding after a long pause, open it in Safari instead — that's a known iOS quirk
+          with home-screen web apps.
+        </p>
+      </footer>
+    </main>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

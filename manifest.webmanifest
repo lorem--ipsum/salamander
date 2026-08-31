@@ -1,0 +1,17 @@
+{
+  "name": "Salamander",
+  "short_name": "Salamander",
+  "description": "A noise generator built to run all night on a locked iPhone.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0c10",
+  "theme_color": "#0a0c10",
+  "icons": [
+    { "src": "icon-96.png", "sizes": "96x96", "type": "image/png" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
