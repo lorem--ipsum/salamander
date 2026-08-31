@@ -155,7 +155,7 @@ function deletePreset(name) {
 async function onToggle() {
   // Never render inside this handler: iOS only honours a play() issued in the same
   // turn as the tap, and a loop is always already loaded by the time the button unlocks.
-  if (player.playing) player.pause();
+  if (player.playing) await player.pause();
   else await player.play();
 }
 

@@ -447,10 +447,14 @@ export function renderLoop(
   };
 }
 
-/** A fraction of a second of silence, used to unlock the audio elements on iOS. */
-export function silentWavUrl() {
-  const frames = 2048;
-  const silent = new Float64Array(frames);
-  const { blob } = writeWav(silent, silent, 1, 8000);
+/**
+ * Silence, for unlocking elements on iOS and for the keep-alive that holds the audio
+ * session open while paused. Long by default so the keep-alive is not restarting — and
+ * churning the Now Playing session — several times a second.
+ */
+export function silentWavUrl(seconds = 10) {
+  const rate = 8000;
+  const silent = new Float64Array(Math.max(1024, Math.round(seconds * rate)));
+  const { blob } = writeWav(silent, silent, 1, rate);
   return URL.createObjectURL(blob);
 }

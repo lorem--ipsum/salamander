@@ -114,6 +114,28 @@ with no stall, block by block:
 Three faded voices sum to within 0.08 dB of a single flat voice at full level, so the
 arrangement costs nothing in loudness.
 
+### Holding the lock screen
+
+Playing several elements at once is what fixes the audio, but it fights how iOS decides
+which page owns the Now Playing controls. Two failures came out of testing on an actual
+phone, and both are about the session rather than the sound:
+
+- **Controls showed "paused" while audio was clearly playing.** iOS picks its Now Playing
+  source from playback activity, and the spare elements were being unlocked *after* the
+  audible ones — so the last thing iOS saw was an element playing and immediately pausing.
+  The spares are now unlocked first, and muted, so they never claim the lock screen.
+- **Pause then play stopped working, and the controls handed over to Music.** Pausing
+  stopped every element, so for a moment nothing at all was playing and iOS tore the audio
+  session down. A backgrounded page cannot get it back. A silent keep-alive element now
+  starts *before* the voices stop, so something always holds the session; it is released
+  again only once the voices are running. It is deliberately unmuted, because a muted
+  element does not hold a session — its content is silence, so nothing is heard.
+
+The keep-alive gets its playback grant from the same tap as everything else, since it later
+has to start from a backgrounded page. Playback state is also re-asserted shortly after
+starting, because iOS settles Now Playing asynchronously and can overwrite a state set too
+early.
+
 ### Changing a setting does not produce a gap
 
 Each voice keeps two elements, ping-ponged. A new loop is preloaded and started *before* the
@@ -168,9 +190,11 @@ base with 40–125 Hz pushed up to sit on top of the intruding bass, and everyth
 
 ## Known iOS quirks
 
-- If lock-screen buttons stop responding after the audio has been **paused** for around 30
-  seconds, that is a known bug with home-screen web apps. Opening the site in Safari instead
-  of from the home-screen icon avoids it. It does not affect continuous playback.
+- There is a known bug where lock-screen buttons stop responding after audio has been
+  **paused** for a while in a home-screen web app. The silent keep-alive above should hold
+  the session open through that, but if the controls ever do go dead, opening the site in
+  Safari rather than from the home-screen icon avoids it. It does not affect continuous
+  playback either way.
 - Master volume is baked into the render, so it only takes effect after the loop is
   re-rendered (a fraction of a second). The real night-time control is the phone or speaker
   volume; the in-app slider sets the headroom.

@@ -52,8 +52,16 @@ export class Player {
     for (let v = 0; v < VOICES; v++) {
       this.voices.push({ els: [this.#makeElement(), this.#makeElement()], active: 0, urls: [null, null] });
     }
+    // Silent, and playing whenever the voices are not. iOS tears down the Now Playing
+    // session the moment nothing at all is playing, and a backgrounded page cannot get it
+    // back — the lock screen goes dead and hands over to Music. Something must always hold it.
+    this.silentUrl = null;
+    this.keeper = this.#makeElement();
+    this.keeper.dataset.role = 'keeper';
+
     this.unlocked = false;
     this.wantPlaying = false;
+    this.reassert = null;
     this.swapping = false;
     this.trackName = 'Noise';
     this.durationSec = 0;
@@ -140,6 +148,7 @@ export class Player {
 
           // Both listeners go on before the action that fires them, otherwise the event
           // is missed and we sit waiting for a fallback, overlapping far longer.
+          next.muted = false;
           const ready = once(next, ['canplaythrough', 'canplay', 'loadeddata'], 4000);
           next.load();
           await ready;
@@ -169,31 +178,53 @@ export class Player {
    * iOS grants playback permission per element, and only for a play() call made in the
    * same synchronous turn as the user's tap. Every element therefore gets its grant here,
    * so later swaps are allowed to call play() programmatically.
+   *
+   * They are unlocked *muted*, and before the audible elements start. iOS picks its Now
+   * Playing source from playback activity, so an unmuted element that plays and then
+   * immediately pauses can end up owning the lock screen and showing "paused" over audio
+   * that is still running.
    */
   #unlockIdle() {
     if (this.unlocked) return;
     this.unlocked = true;
-    let temporary = null;
-    for (const voice of this.voices) {
-      const other = voice.els[1 - voice.active];
-      if (!other.src) {
-        temporary = temporary || silentWavUrl();
-        other.src = temporary;
-      }
-      other
-        .play()
-        .then(() => other.pause())
+    if (!this.silentUrl) this.silentUrl = silentWavUrl();
+    const spares = this.voices.map((voice) => voice.els[1 - voice.active]);
+    // The keeper needs its grant from this same tap, or it cannot be started later from a
+    // backgrounded page — which is exactly when it is needed.
+    spares.push(this.keeper);
+    for (const el of spares) {
+      el.muted = true;
+      if (!el.src) el.src = this.silentUrl;
+      el.play()
+        .then(() => el.pause())
         .catch(() => {});
     }
-    if (temporary) setTimeout(() => URL.revokeObjectURL(temporary), 4000);
+  }
+
+  /**
+   * Hold the audio session open with silence so the lock screen stays ours. Unmuted on
+   * purpose: a muted element does not hold an audio session, and the content is silence
+   * anyway, so nothing is heard.
+   */
+  #startKeeper() {
+    if (!this.silentUrl) this.silentUrl = silentWavUrl();
+    if (!this.keeper.src) this.keeper.src = this.silentUrl;
+    this.keeper.muted = false;
+    this.keeper.loop = true;
+    return this.keeper.play().catch(() => {});
   }
 
   async play() {
     this.wantPlaying = true;
     this.#setMetadata();
-    // Every play() must be issued before the first await, while still inside the tap.
-    const started = this.live.map((el) => el.play());
+    // Order matters. Unlock the muted spares first so the LAST playback iOS sees is an
+    // audible voice — that is what it attaches the lock screen to. Every play() has to be
+    // issued before the first await, while still inside the tap.
     this.#unlockIdle();
+    const started = this.live.map((el) => {
+      el.muted = false;
+      return el.play();
+    });
     try {
       await Promise.all(started);
       this.onError(null);
@@ -201,17 +232,31 @@ export class Player {
       this.wantPlaying = false;
       this.onError(err.message || 'playback was blocked');
     }
+    // Only now release the silence, so the session is handed over rather than dropped.
+    this.keeper.pause();
+    this.#setMetadata();
     this.#sync();
+    // iOS settles Now Playing asynchronously and can overwrite a state set this early,
+    // leaving the lock screen showing "paused" over audio that is plainly running.
+    clearTimeout(this.reassert);
+    this.reassert = setTimeout(() => {
+      if (!this.wantPlaying) return;
+      this.#setMetadata();
+      this.#sync();
+    }, 700);
   }
 
-  pause() {
+  async pause() {
     this.wantPlaying = false;
+    // Start the silence BEFORE stopping the voices: if nothing at all is playing, even
+    // for an instant, iOS drops the session and the lock screen stops responding.
+    await this.#startKeeper();
     for (const voice of this.voices) for (const el of voice.els) el.pause();
     this.#sync();
   }
 
   async toggle() {
-    if (this.playing) this.pause();
+    if (this.playing) await this.pause();
     else await this.play();
   }
 }
