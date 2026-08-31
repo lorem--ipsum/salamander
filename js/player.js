@@ -55,10 +55,13 @@ function once(el, events, timeoutMs) {
 }
 
 export class Player {
-  constructor({ onStateChange, onError, onTransition } = {}) {
+  constructor({ onStateChange, onError, onTransition, onVoiceChange } = {}) {
     this.onStateChange = onStateChange || (() => {});
     this.onError = onError || (() => {});
     this.onTransition = onTransition || (() => {});
+    // Fires as each voice actually takes the new loop, so the display can follow the sound
+    // rather than jumping ahead of it.
+    this.onVoiceChange = onVoiceChange || (() => {});
     this.swapGeneration = 0;
     this.swapTimer = null;
     this.voices = [];
@@ -179,7 +182,7 @@ export class Player {
    * both at silence, keeping the phase and so the stagger. A voice reaches that point once
    * per loop and they are staggered, so a change lands in three steps roughly T/V apart.
    */
-  async load(urls, durationSec) {
+  async load(urls, durationSec, tag) {
     this.durationSec = durationSec || this.durationSec;
     const generation = ++this.swapGeneration;
     clearInterval(this.swapTimer);
@@ -200,7 +203,11 @@ export class Player {
         await ready;
       }),
     );
-    if (generation !== this.swapGeneration) return;
+    if (generation !== this.swapGeneration) {
+      // Superseded mid-preload: these loops will never be heard.
+      setTimeout(() => urls.forEach((u) => URL.revokeObjectURL(u)), 2000);
+      return;
+    }
 
     if (!this.playing) {
       // Nothing audible yet, so take the new loops at once and set the stagger directly.
@@ -211,22 +218,26 @@ export class Player {
         } catch {
           /* metadata not in yet; the stagger is re-established on the next handover */
         }
-        this.#commit(voice, index, urls[index]);
+        this.#commit(voice, index, urls[index], tag);
       });
       this.#sync();
       return;
     }
-    this.#handOverWhenQuiet(generation, urls);
+    this.#handOverWhenQuiet(generation, urls, tag);
   }
 
-  #commit(voice, index, url) {
+  #commit(voice, index, url, tag) {
     const previous = voice.urls[1 - voice.active];
     voice.urls[1 - voice.active] = url;
     voice.active = 1 - voice.active;
     if (previous) setTimeout(() => URL.revokeObjectURL(previous), 1000);
+    // The tag travels with the render rather than being read from shared state: a
+    // handover can land while a newer render is already in flight, and crediting it with
+    // those settings would show the display ahead of the sound.
+    this.onVoiceChange(index, tag);
   }
 
-  #handOverWhenQuiet(generation, urls) {
+  #handOverWhenQuiet(generation, urls, tag) {
     const pending = new Set(this.voices.map((_, i) => i));
     this.onTransition(true);
     // If a voice never reports a quiet point — a stalled element, a throttled tab — take
@@ -266,7 +277,7 @@ export class Player {
           }
           next.play().catch(() => {});
           voice.els[voice.active].pause();
-          this.#commit(voice, index, urls[index]);
+          this.#commit(voice, index, urls[index], tag);
           pending.delete(index);
           if (!pending.size) {
             clearInterval(this.swapTimer);

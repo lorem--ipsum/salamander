@@ -212,6 +212,19 @@ again and roughly double that ripple.
 The transport says "easing in..." while a change is landing, because otherwise even a couple
 of seconds reads as the app ignoring the slider.
 
+### The curve shows what is audible, not what was asked for
+
+Because voices take a change one at a time, part way through a change the sound really is a
+mixture of old and new settings — and since voices sum as power, the audible spectrum is
+their power average. That is what the response curve draws, stepping toward the new shape as
+each voice hands over. The target is drawn behind it as a faint dashed line, which disappears
+once everything has converged.
+
+The settings behind each render travel with it rather than sitting in a shared variable.
+Rendering blocks for a while, so moving a slider again during it means a handover from the
+previous render can land while a newer one is already in flight; reading shared state there
+credits a voice with settings it is not playing, and the display runs ahead of the sound.
+
 ## Running it locally
 
 ```bash

@@ -12,6 +12,9 @@ let activePreset = null;
 let lastRender = null;
 let pendingRender = null;
 let transitioning = false;
+// What each voice is actually playing. Voices take a change one at a time, so the curve
+// follows this rather than the target — it shows what you are hearing, not what you asked for.
+let voiceSettings = [];
 let ui = null;
 
 const player = new Player({
@@ -26,6 +29,12 @@ const player = new Player({
   onTransition: (active) => {
     transitioning = active;
     if (ui) updateStatus();
+  },
+  // `tag` is the settings that voice just started playing, carried along with its render.
+  onVoiceChange: (index, tag) => {
+    if (!tag) return;
+    voiceSettings[index] = tag;
+    ui?.setVoiceSettings(voiceSettings.filter(Boolean));
   },
 });
 
@@ -101,7 +110,10 @@ async function runRender() {
   // One independent loop per voice. They play together, staggered, so neither voice's
   // loop seam is ever exposed; each is rendered 3 dB down so the pair sums to the
   // intended level.
-  const perVoice = { ...settings, volumeDb: settings.volumeDb - 10 * Math.log10(VOICES) };
+  // Snapshot once: rendering blocks for a while, and this exact set is what the voices
+  // will be playing when they hand over.
+  const snapshot = store.cloneSettings(settings);
+  const perVoice = { ...snapshot, volumeDb: snapshot.volumeDb - 10 * Math.log10(VOICES) };
   let renders;
   try {
     renders = Array.from({ length: VOICES }, () => renderLoop(perVoice));
@@ -113,7 +125,7 @@ async function runRender() {
 
   lastRender = renders[0];
   player.setTrackName(trackName());
-  await player.load(renders.map((r) => r.url), renders[0].durationSec);
+  await player.load(renders.map((r) => r.url), renders[0].durationSec, snapshot);
   ui.setBusy(false);
   updateStatus();
 }
@@ -179,6 +191,8 @@ async function init() {
   });
 
   activePreset = matchPreset();
+  voiceSettings = Array.from({ length: VOICES }, () => store.cloneSettings(settings));
+  ui.setVoiceSettings(voiceSettings);
   ui.setSettings(settings);
   ui.setPresets(allPresets(), activePreset);
   ui.setPlaying(false);

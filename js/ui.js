@@ -55,6 +55,9 @@ export class UI {
 
     this.ctx = this.el.curve.getContext('2d');
     this.lastSettings = null;
+    // What is actually sounding: one entry per voice. Voices take a change one at a time,
+    // so until they all have, the audible spectrum is the average of a mixture.
+    this.voiceSettings = null;
 
     // Resizing a canvas clears it, so every resize has to redraw. A ResizeObserver also
     // covers the first layout pass, when the canvas still has no width to draw into.
@@ -230,6 +233,12 @@ export class UI {
     this.el.delete.hidden = !active || active.builtIn;
   }
 
+  /** What each voice is currently playing, so the curve can follow the sound. */
+  setVoiceSettings(list) {
+    this.voiceSettings = list && list.length ? list : null;
+    if (this.lastSettings) this.drawCurve(this.lastSettings);
+  }
+
   /** Everything that is safe to repaint mid-drag. */
   reflect(s) {
     this.lastSettings = s;
@@ -285,14 +294,29 @@ export class UI {
 
     const logLo = Math.log(CURVE_LO);
     const logHi = Math.log(CURVE_HI);
-    const db = new Float64Array(CURVE_POINTS);
+    const voices = this.voiceSettings;
+    const db = new Float64Array(CURVE_POINTS); // what is audible right now
+    const target = new Float64Array(CURVE_POINTS); // where it is heading
     let top = -Infinity;
+    let divergence = 0;
     for (let i = 0; i < CURVE_POINTS; i++) {
       const f = Math.exp(logLo + ((logHi - logLo) * i) / (CURVE_POINTS - 1));
-      db[i] = magnitudeDb(f, s);
+      target[i] = magnitudeDb(f, s);
+      if (voices) {
+        // Voices sum as power, so the audible spectrum is their power average.
+        let power = 0;
+        for (const v of voices) power += Math.pow(10, magnitudeDb(f, v) / 10);
+        db[i] = 10 * Math.log10(power / voices.length);
+      } else {
+        db[i] = target[i];
+      }
+      const diff = Math.abs(db[i] - target[i]);
+      if (diff > divergence) divergence = diff;
       if (db[i] > top) top = db[i];
+      if (target[i] > top) top = target[i];
     }
     top += 6;
+    const showTarget = divergence > 0.25;
 
     const x = (i) => pad + ((w - 2 * pad) * i) / (CURVE_POINTS - 1);
     const y = (v) => pad + ((h - 2 * pad) * (top - v)) / CURVE_SPAN_DB;
@@ -329,6 +353,19 @@ export class UI {
     fill.addColorStop(1, 'rgba(255,138,61,0.02)');
     ctx.fillStyle = fill;
     ctx.fill(area);
+
+    // Where it is heading, drawn faint and dashed behind the audible curve.
+    if (showTarget) {
+      const ghost = new Path2D();
+      ghost.moveTo(x(0), clampY(target[0]));
+      for (let i = 1; i < CURVE_POINTS; i++) ghost.lineTo(x(i), clampY(target[i]));
+      ctx.save();
+      ctx.setLineDash([4 * dpr, 4 * dpr]);
+      ctx.strokeStyle = 'rgba(255,138,61,0.45)';
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.stroke(ghost);
+      ctx.restore();
+    }
 
     ctx.strokeStyle = '#ff8a3d';
     ctx.lineWidth = 2 * dpr;
