@@ -11,6 +11,7 @@ let userPresets = store.loadUserPresets();
 let activePreset = null;
 let lastRender = null;
 let pendingRender = null;
+let transitioning = false;
 let ui = null;
 
 const player = new Player({
@@ -20,6 +21,12 @@ const player = new Player({
     updateStatus();
   },
   onError: (message) => ui?.setError(message),
+  // Voices hand over one at a time, each at its own silent point, so a change lands
+  // gradually. Say so, or the delay reads as the app ignoring the slider.
+  onTransition: (active) => {
+    transitioning = active;
+    if (ui) updateStatus();
+  },
 });
 
 // Yield long enough for the status text to paint before the transform blocks the thread.
@@ -69,9 +76,12 @@ function updateStatus(override) {
     ui.setStatus(state, '');
     return;
   }
+  const name = COLORS[settings.color].label;
   ui.setStatus(
     state,
-    `${COLORS[settings.color].label} · ${lastRender.durationSec.toFixed(1)} s seamless loop`,
+    transitioning
+      ? `${name} · easing in…`
+      : `${name} · ${lastRender.durationSec.toFixed(1)} s seamless loop`,
   );
 }
 

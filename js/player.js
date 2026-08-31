@@ -20,6 +20,14 @@ import { silentWavUrl } from './render.js';
 
 export const VOICES = 3;
 
+// Coarse polling only has to get near the end of a voice's file; the exchange itself is
+// then timed. Overshooting is harmless — the far side of the loop point is just as silent —
+// so this aims to land TARGET_LEAD_SEC from the end, where the envelope is about -40 dB on
+// a 24 s loop, rather than settling for whatever a polling tick happens to catch.
+const ARM_WITHIN_SEC = 0.8;
+const TARGET_LEAD_SEC = 0.08;
+const POLL_MS = 50;
+
 const ARTWORK = [
   // iOS before 18 uses the *first* entry and greys out anything over 128 px, so the
   // small one has to lead. iOS 18+ picks the 512 correctly.
@@ -45,12 +53,21 @@ function once(el, events, timeoutMs) {
 }
 
 export class Player {
-  constructor({ onStateChange, onError } = {}) {
+  constructor({ onStateChange, onError, onTransition } = {}) {
     this.onStateChange = onStateChange || (() => {});
     this.onError = onError || (() => {});
+    this.onTransition = onTransition || (() => {});
+    this.swapGeneration = 0;
+    this.swapTimer = null;
     this.voices = [];
     for (let v = 0; v < VOICES; v++) {
-      this.voices.push({ els: [this.#makeElement(), this.#makeElement()], active: 0, urls: [null, null] });
+      this.voices.push({
+        els: [this.#makeElement(), this.#makeElement()],
+        active: 0,
+        urls: [null, null],
+        armed: false,
+        armTimer: null,
+      });
     }
     // Silent, and playing whenever the voices are not. iOS tears down the Now Playing
     // session the moment nothing at all is playing, and a backgrounded page cannot get it
@@ -144,46 +161,114 @@ export class Player {
     return this.durationSec ? (this.durationSec * index) / VOICES : 0;
   }
 
-  /** Swap in freshly rendered loops — one per voice — without producing a gap. */
+  /**
+   * Swap in freshly rendered loops — one per voice — without a click or a level jump.
+   *
+   * Every voice is already faded to silence at the ends of its file, so that is the only
+   * place it can be exchanged for free. Starting a replacement anywhere else jumps from
+   * silence to whatever the envelope is at that point — 87% of full scale at a third of
+   * the way in — and stopping the outgoing one mid-envelope drops full scale to zero.
+   * Both are clicks. Overlapping them instead is worse: the voice runs at +3 dB until the
+   * old one stops, and with three voices doing that at different moments the level steps
+   * around.
+   *
+   * So each voice is preloaded, then held until it reaches its own quiet tail, and only
+   * then exchanged: the outgoing one is stopped and the replacement started from zero,
+   * both at silence, keeping the phase and so the stagger. A voice reaches that point once
+   * per loop and they are staggered, so a change lands in three steps roughly T/V apart.
+   */
   async load(urls, durationSec) {
     this.durationSec = durationSec || this.durationSec;
-    const wasPlaying = this.playing;
-    this.swapping = true;
-    try {
-      await Promise.all(
-        this.voices.map(async (voice, index) => {
-          const next = voice.els[1 - voice.active];
-          const old = voice.els[voice.active];
-          const previous = voice.urls[1 - voice.active];
-          next.src = urls[index];
-          voice.urls[1 - voice.active] = urls[index];
-
-          // Both listeners go on before the action that fires them, otherwise the event
-          // is missed and we sit waiting for a fallback, overlapping far longer.
-          next.muted = false;
-          const ready = once(next, ['canplaythrough', 'canplay', 'loadeddata'], 4000);
-          next.load();
-          await ready;
-          try {
-            next.currentTime = this.#offsetFor(index);
-          } catch {
-            /* seeking before metadata lands is not fatal — the stagger is an optimisation */
-          }
-
-          if (wasPlaying) {
-            const started = once(next, ['playing', 'timeupdate'], 1500);
-            await next.play().catch(() => {});
-            await started;
-            old.pause();
-          }
-          voice.active = 1 - voice.active;
-          if (previous) setTimeout(() => URL.revokeObjectURL(previous), 1000);
-        }),
-      );
-    } finally {
-      this.swapping = false;
+    const generation = ++this.swapGeneration;
+    clearInterval(this.swapTimer);
+    for (const voice of this.voices) {
+      clearTimeout(voice.armTimer);
+      voice.armed = false;
     }
-    this.#sync();
+
+    // Preload everything first, so a voice can hand over the moment it goes quiet rather
+    // than starting to fetch and decode at that point.
+    await Promise.all(
+      this.voices.map(async (voice, index) => {
+        const next = voice.els[1 - voice.active];
+        next.muted = false;
+        const ready = once(next, ['canplaythrough', 'canplay', 'loadeddata'], 4000);
+        next.src = urls[index];
+        next.load();
+        await ready;
+      }),
+    );
+    if (generation !== this.swapGeneration) return;
+
+    if (!this.playing) {
+      // Nothing audible yet, so take the new loops at once and set the stagger directly.
+      this.voices.forEach((voice, index) => {
+        const next = voice.els[1 - voice.active];
+        try {
+          next.currentTime = this.#offsetFor(index);
+        } catch {
+          /* metadata not in yet; the stagger is re-established on the next handover */
+        }
+        this.#commit(voice, index, urls[index]);
+      });
+      this.#sync();
+      return;
+    }
+    this.#handOverWhenQuiet(generation, urls);
+  }
+
+  #commit(voice, index, url) {
+    const previous = voice.urls[1 - voice.active];
+    voice.urls[1 - voice.active] = url;
+    voice.active = 1 - voice.active;
+    if (previous) setTimeout(() => URL.revokeObjectURL(previous), 1000);
+  }
+
+  #handOverWhenQuiet(generation, urls) {
+    const pending = new Set(this.voices.map((_, i) => i));
+    this.onTransition(true);
+    // If a voice never reports a quiet point — a stalled element, a throttled tab — take
+    // the small artifact rather than leaving the change permanently unapplied.
+    const deadline = performance.now() + Math.max(5000, (this.durationSec || 24) * 2000);
+
+    this.swapTimer = setInterval(() => {
+      if (generation !== this.swapGeneration) {
+        clearInterval(this.swapTimer);
+        return;
+      }
+      const forced = performance.now() > deadline;
+      for (const index of [...pending]) {
+        const voice = this.voices[index];
+        if (voice.armed) continue;
+        const old = voice.els[voice.active];
+        const total = old.duration || this.durationSec;
+        const remaining = total ? total - old.currentTime : 0;
+        if (total && !old.paused && !forced && remaining > ARM_WITHIN_SEC) continue;
+
+        // Close enough to time the exchange precisely instead of waiting for a tick.
+        voice.armed = true;
+        const wait = forced || !total || old.paused ? 0 : Math.max(0, (remaining - TARGET_LEAD_SEC) * 1000);
+        voice.armTimer = setTimeout(() => {
+          voice.armed = false;
+          if (generation !== this.swapGeneration) return;
+          const next = voice.els[1 - voice.active];
+          try {
+            next.currentTime = 0;
+          } catch {
+            /* not fatal: it plays from wherever it is */
+          }
+          next.play().catch(() => {});
+          voice.els[voice.active].pause();
+          this.#commit(voice, index, urls[index]);
+          pending.delete(index);
+          if (!pending.size) {
+            clearInterval(this.swapTimer);
+            this.onTransition(false);
+            this.#sync();
+          }
+        }, wait);
+      }
+    }, POLL_MS);
   }
 
   /**

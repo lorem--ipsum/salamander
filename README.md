@@ -151,11 +151,41 @@ overwrite a state set too early.
 The cost is that a silent element plays for as long as the page is open, including while
 paused. That is the price of controls that keep working.
 
-### Changing a setting does not produce a gap
+### Changing a setting hands over at silence
 
-Each voice keeps two elements, ping-ponged. A new loop is preloaded and started *before* the
-old one is paused, so there is never a moment of silence, and the stagger is re-established
-on every swap.
+Each voice keeps two elements, but the exchange cannot happen just anywhere. A voice is
+already faded to silence at the ends of its file, and that is the only place it can be
+swapped for free. Getting this wrong was audible as cracks and a jumping level when moving
+an equaliser slider:
+
+- Starting the replacement at its stagger offset meant two of the three voices began at
+  `sin(pi/3)` — 87% of full scale — instantly. Silence to near-full in one sample is a click.
+- Stopping the outgoing voice mid-envelope dropped full scale to zero. Another click.
+- Overlapping the two while both played put that voice at +3 dB until the old one stopped,
+  and with three voices doing it at different moments the level stepped around.
+
+Now every replacement is preloaded, then each voice is held until it approaches the end of
+its file. Polling only has to get close; the exchange itself is then timed to land about
+80 ms from the end. Overshooting is harmless — the far side of the loop point is just as
+silent — so it can aim tight rather than settle for wherever a polling tick happens to fall.
+The outgoing element stops and the replacement starts from zero, both at silence, which also
+preserves the phase and so the stagger.
+
+Measured, worst discontinuity at any handover:
+
+| | worst |
+|---|---|
+| starting at the stagger offset | -1.2 dB (87% of full scale) |
+| swapping within a 0.6 s tail | -22 dB |
+| timed to ~80 ms from the end | **-38.5 dB** |
+
+On the real output across a slider change the level stays within +/-1.14 dB, and the largest
+step between 43 ms blocks is 1.76 dB — ordinary brown-noise variation rather than a jump.
+
+The cost is that a change is not instant. A voice reaches its quiet point once per loop and
+the voices are staggered, so a change lands in three steps roughly 8 seconds apart and
+completes within one loop. The transport says "easing in..." while that happens, because
+otherwise the delay reads as the app ignoring the slider.
 
 ## Running it locally
 
