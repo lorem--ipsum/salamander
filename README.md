@@ -131,10 +131,25 @@ phone, and both are about the session rather than the sound:
   again only once the voices are running. It is deliberately unmuted, because a muted
   element does not hold a session — its content is silence, so nothing is heard.
 
-The keep-alive gets its playback grant from the same tap as everything else, since it later
-has to start from a backgrounded page. Playback state is also re-asserted shortly after
-starting, because iOS settles Now Playing asynchronously and can overwrite a state set too
-early.
+Holding the session turned out not to be enough on its own. Testing on the phone again: the
+state showed correctly and playback resumed fine, but the lock-screen controls still slid
+over to Music. The keep-alive was being started on pause and then *stopped* again once the
+voices were running, so the page still had brief moments with no media playing — and iOS
+uses exactly those moments to reassign the slot.
+
+So the keep-alive is never stopped. Once the user has started playback it runs for the life
+of the page, silent, through both playing and paused states. The page therefore always has
+media playing, iOS never gets an opening, and the keep-alive — rather than voices that come
+and go — is the stable thing the lock screen attaches to. A watchdog restarts it if anything
+else pauses it, because iOS pauses the element it is tracking when the lock-screen pause is
+used, and that can catch the keep-alive too.
+
+It gets its playback grant from its own start call inside the tap. Playback state is also
+re-asserted shortly after starting, because iOS settles Now Playing asynchronously and can
+overwrite a state set too early.
+
+The cost is that a silent element plays for as long as the page is open, including while
+paused. That is the price of controls that keep working.
 
 ### Changing a setting does not produce a gap
 

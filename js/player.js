@@ -58,10 +58,22 @@ export class Player {
     this.silentUrl = null;
     this.keeper = this.#makeElement();
     this.keeper.dataset.role = 'keeper';
+    this.keeper.addEventListener('pause', () => {
+      // iOS pauses the element it is tracking when the lock-screen pause is used, which
+      // can catch the keeper too. Put it straight back, slightly deferred so we are not
+      // fighting iOS inside its own event.
+      if (!this.holdSession) return;
+      setTimeout(() => {
+        if (this.holdSession && this.keeper.paused) this.#startKeeper();
+      }, 120);
+    });
 
     this.unlocked = false;
     this.wantPlaying = false;
     this.reassert = null;
+    // Once the user has started us, this page must never again have a moment with no
+    // media playing at all — that is the gap iOS uses to hand the lock screen to Music.
+    this.holdSession = false;
     this.swapping = false;
     this.trackName = 'Noise';
     this.durationSec = 0;
@@ -188,10 +200,10 @@ export class Player {
     if (this.unlocked) return;
     this.unlocked = true;
     if (!this.silentUrl) this.silentUrl = silentWavUrl();
+    // The keeper is not in this list: it takes its grant from its own start call, which
+    // also happens inside the tap. Unlocking it here would pause it a moment later and
+    // fight the very thing it exists to do.
     const spares = this.voices.map((voice) => voice.els[1 - voice.active]);
-    // The keeper needs its grant from this same tap, or it cannot be started later from a
-    // backgrounded page — which is exactly when it is needed.
-    spares.push(this.keeper);
     for (const el of spares) {
       el.muted = true;
       if (!el.src) el.src = this.silentUrl;
@@ -221,6 +233,8 @@ export class Player {
     // audible voice — that is what it attaches the lock screen to. Every play() has to be
     // issued before the first await, while still inside the tap.
     this.#unlockIdle();
+    this.holdSession = true;
+    this.#startKeeper();
     const started = this.live.map((el) => {
       el.muted = false;
       return el.play();
@@ -232,8 +246,10 @@ export class Player {
       this.wantPlaying = false;
       this.onError(err.message || 'playback was blocked');
     }
-    // Only now release the silence, so the session is handed over rather than dropped.
-    this.keeper.pause();
+    // The keeper is deliberately NOT stopped. It is silent, and leaving it running means
+    // this page always has media playing, so iOS never gets an opening to reassign the
+    // lock screen. It also makes the keeper the stable thing iOS attaches to, rather than
+    // voices that come and go.
     this.#setMetadata();
     this.#sync();
     // iOS settles Now Playing asynchronously and can overwrite a state set this early,
@@ -248,6 +264,7 @@ export class Player {
 
   async pause() {
     this.wantPlaying = false;
+    this.holdSession = true;
     // Start the silence BEFORE stopping the voices: if nothing at all is playing, even
     // for an instant, iOS drops the session and the lock screen stops responding.
     await this.#startKeeper();

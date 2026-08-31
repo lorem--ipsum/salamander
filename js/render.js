@@ -452,7 +452,7 @@ export function renderLoop(
  * session open while paused. Long by default so the keep-alive is not restarting — and
  * churning the Now Playing session — several times a second.
  */
-export function silentWavUrl(seconds = 10) {
+export function silentWavUrl(seconds = 30) {
   const rate = 8000;
   const silent = new Float64Array(Math.max(1024, Math.round(seconds * rate)));
   const { blob } = writeWav(silent, silent, 1, rate);
